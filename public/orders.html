@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Orders</title>
+  <style>
+    body { font-family: Arial; margin: 20px; background: #f7f7f7; }
+    h1 { text-align: center; }
+    .order { background: white; max-width: 400px; margin: 10px auto; padding: 15px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Orders</h1>
+  <div id="orders">Loading...</div>
+
+  <script>
+    async function loadOrders() {
+      const response = await fetch("/orders");
+      const orders = await response.json();
+      const container = document.getElementById("orders");
+      container.innerHTML = "";
+
+      if (orders.length === 0) {
+        container.innerText = "No orders yet.";
+        return;
+      }
+
+      for (const o of orders) {
+        const box = document.createElement("div");
+        box.className = "order";
+        const items = o.items.map(i => i.product_name + " ($" + i.price + ")").join(", ");
+        box.innerText =
+          "Order #" + o.id + "\n" +
+          o.customer_name + " (" + o.customer_email + ")\n" +
+          "Items: " + items + "\n" +
+          "Total: $" + o.total + "\n" +
+          o.created_at;
+        container.appendChild(box);
+      }
+    }
+    loadOrders();
+  </script>
+</body>
+</html>

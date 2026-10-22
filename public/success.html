@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Payment</title>
+  <style>
+    body { font-family: Arial; margin: 20px; background: #f7f7f7; text-align: center; }
+    #result { background: white; max-width: 400px; margin: 20px auto; padding: 20px; border-radius: 8px; }
+    a { color: #222; }
+  </style>
+</head>
+<body>
+  <h1>Thank you!</h1>
+  <div id="result">Checking your payment...</div>
+  <p><a href="/">Back to the store</a></p>
+
+  <script>
+    async function confirmPayment() {
+      const sessionId = new URLSearchParams(window.location.search).get("session_id");
+      const result = document.getElementById("result");
+      const response = await fetch("/confirm?session_id=" + encodeURIComponent(sessionId));
+      const data = await response.json();
+
+      if (response.ok) {
+        result.innerText = "Payment received! Order #" + data.orderId + ". Total: $" + data.total;
+      } else {
+        result.innerText = data.error;
+      }
+    }
+    confirmPayment();
+  </script>
+</body>
+</html>

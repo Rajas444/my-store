@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>My Store</title>
+  <style>
+    body { font-family: Arial; margin: 20px; background: #f7f7f7; }
+    h1 { text-align: center; }
+    .product { background: white; padding: 15px; margin: 10px auto; max-width: 300px; border-radius: 8px; text-align: center; }
+    button { background: #222; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; }
+    #cart { background: white; max-width: 300px; margin: 20px auto; padding: 15px; border-radius: 8px; }
+    #total { font-weight: bold; margin: 10px 0; }
+    input { width: 100%; padding: 8px; margin: 6px 0; box-sizing: border-box; }
+    #message { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>My Store</h1>
+  <div id="products">Loading...</div>
+
+  <div id="cart">
+    <h3>Your Cart</h3>
+    <ul id="list"></ul>
+    <div id="total">Total: $0</div>
+    <button onclick="clearCart()">Clear cart</button>
+
+    <h3>Checkout</h3>
+    <input id="name" placeholder="Your name">
+    <input id="email" type="email" placeholder="Your email">
+    <button onclick="placeOrder()">Place order</button>
+    <div id="message"></div>
+  </div>
+
+  <script>
+    let products = [];
+    let cart = [];
+
+    async function loadProducts() {
+      try {
+        const response = await fetch("/products");
+        products = await response.json();
+        let html = "";
+        for (let p of products) {
+          html += '<div class="product"><h3>' + p.name + '</h3><p>$' + p.price +
+            '</p><button onclick="addToCart(' + p.id + ')">Add to cart</button></div>';
+        }
+        document.getElementById("products").innerHTML = html;
+      } catch (err) {
+        document.getElementById("products").innerText = "Could not load products: " + err.message;
+      }
+    }
+
+    function addToCart(id) {
+      cart.push(products.find(p => p.id === id));
+      showCart();
+    }
+
+    function clearCart() {
+      cart = [];
+      showCart();
+    }
+
+    function showCart() {
+      let html = "";
+      let total = 0;
+      for (let item of cart) {
+        html += "<li>" + item.name + " - $" + item.price + "</li>";
+        total += item.price;
+      }
+      document.getElementById("list").innerHTML = html;
+      document.getElementById("total").innerText = "Total: $" + total;
+    }
+
+    async function placeOrder() {
+      const message = document.getElementById("message");
+      const name = document.getElementById("name").value;
+      const email = document.getElementById("email").value;
+
+      if (cart.length === 0) {
+        message.innerText = "Your cart is empty.";
+        return;
+      }
+
+      const response = await fetch("/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name, email: email, productIds: cart.map(p => p.id) })
+      });
+      const data = await response.json();
+
+      if (response.ok) {
+        window.location = data.url; // go to Stripe's payment page
+      } else {
+        message.innerText = data.error;
+      }
+    }
+
+    loadProducts();
+  </script>
+</body>
+</html>

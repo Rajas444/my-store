@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Admin</title>
+  <style>
+    body { font-family: Arial; margin: 20px; background: #f7f7f7; }
+    h1 { text-align: center; }
+    #box { background: white; max-width: 300px; margin: 20px auto; padding: 20px; border-radius: 8px; }
+    input { width: 100%; padding: 8px; margin: 6px 0 12px; box-sizing: border-box; }
+    button { background: #222; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; }
+    #message { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Add a Product</h1>
+  <div id="box">
+    <label>Product name</label>
+    <input id="name" placeholder="e.g. Blue T-shirt">
+    <label>Price</label>
+    <input id="price" type="number" placeholder="e.g. 25">
+    <button onclick="addProduct()">Add product</button>
+    <div id="message"></div>
+  </div>
+
+  <script>
+    async function addProduct() {
+      const name = document.getElementById("name").value;
+      const price = Number(document.getElementById("price").value);
+
+      const response = await fetch("/products", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name, price: price })
+      });
+
+      if (response.ok) {
+        document.getElementById("message").innerText = "Added! Check the store page.";
+        document.getElementById("name").value = "";
+        document.getElementById("price").value = "";
+      } else {
+        document.getElementById("message").innerText = "Something went wrong. Check the name and price.";
+      }
+    }
+  </script>
+</body>
+</html>

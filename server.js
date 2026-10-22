@@ -1,5 +1,8 @@
 require("dotenv").config();
 const express = require("express");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
 const Stripe = require("stripe");
 
@@ -7,6 +10,16 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const db = new DatabaseSync("store.db");
 const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
+
+if (!process.env.ADMIN_PASSWORD) {
+  console.warn("WARNING: ADMIN_PASSWORD is not set. Admin pages will stay locked.");
+}
+
+// Needed when the site runs behind a host like Render
+app.set("trust proxy", 1);
+
+// Standard security headers
+app.use(helmet({ contentSecurityPolicy: false }));
 
 // Saves several things together, or none of them if something fails
 function inTransaction(work) {
@@ -57,21 +70,37 @@ if (count === 0) {
   insert.run("Product 3", 20);
 }
 
-// Password check for admin pages
+// Limits: slow down guessing and spamming
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  skipSuccessfulRequests: true, // only failed password attempts count
+  message: "Too many failed attempts. Try again in 15 minutes."
+});
+const checkoutLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: { error: "Too many requests. Please try again later." }
+});
+
+// Password check for admin pages (compares in a way that can't be timed)
 function requireAdmin(req, res, next) {
+  const expected = process.env.ADMIN_PASSWORD;
   const header = req.headers.authorization || "";
   const [type, encoded] = header.split(" ");
-  if (type === "Basic" && encoded) {
+  if (expected && type === "Basic" && encoded) {
     const decoded = Buffer.from(encoded, "base64").toString();
     const password = decoded.split(":").slice(1).join(":");
-    if (password === process.env.ADMIN_PASSWORD) return next();
+    const a = crypto.createHash("sha256").update(password).digest();
+    const b = crypto.createHash("sha256").update(expected).digest();
+    if (crypto.timingSafeEqual(a, b)) return next();
   }
   res.set("WWW-Authenticate", 'Basic realm="Admin"');
   res.status(401).send("Password required");
 }
-app.use(["/admin.html", "/orders.html"], requireAdmin);
+app.use(["/admin.html", "/orders.html"], adminLimiter, requireAdmin);
 
-app.use(express.json());
+app.use(express.json({ limit: "10kb" }));
 app.use(express.static("public"));
 
 // Get all products
@@ -79,23 +108,45 @@ app.get("/products", (req, res) => {
   res.json(db.prepare("SELECT * FROM products").all());
 });
 
-// Add a new product
-app.post("/products", requireAdmin, (req, res) => {
+// Add a new product (owner only)
+app.post("/products", adminLimiter, requireAdmin, (req, res) => {
   const { name, price } = req.body;
-  if (!name || typeof price !== "number" || price < 0) {
-    return res.status(400).json({ error: "Please send a name and a valid price." });
+  const cleanName = typeof name === "string" ? name.trim() : "";
+  if (
+    cleanName.length === 0 ||
+    cleanName.length > 100 ||
+    typeof price !== "number" ||
+    !Number.isFinite(price) ||
+    price <= 0 ||
+    price > 100000
+  ) {
+    return res.status(400).json({ error: "Please send a name (up to 100 letters) and a price above 0." });
   }
   const result = db
     .prepare("INSERT INTO products (name, price) VALUES (?, ?)")
-    .run(name, price);
-  res.json({ id: Number(result.lastInsertRowid), name, price });
+    .run(cleanName, price);
+  res.json({ id: Number(result.lastInsertRowid), name: cleanName, price });
 });
 
 // Start a payment: send the customer to Stripe's secure payment page
-app.post("/checkout", async (req, res) => {
+app.post("/checkout", checkoutLimiter, async (req, res) => {
   const { name, email, productIds } = req.body;
-  if (!name || !email || !Array.isArray(productIds) || productIds.length === 0) {
-    return res.status(400).json({ error: "Please send your name, email and cart." });
+
+  const cleanName = typeof name === "string" ? name.trim() : "";
+  const cleanEmail = typeof email === "string" ? email.trim() : "";
+  const emailLooksOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail);
+
+  if (
+    cleanName.length === 0 ||
+    cleanName.length > 100 ||
+    !emailLooksOk ||
+    cleanEmail.length > 200 ||
+    !Array.isArray(productIds) ||
+    productIds.length === 0 ||
+    productIds.length > 20 ||
+    !productIds.every((id) => Number.isInteger(id))
+  ) {
+    return res.status(400).json({ error: "Please check your name, email and cart." });
   }
 
   // Prices come from our database, never from the browser
@@ -110,7 +161,7 @@ app.post("/checkout", async (req, res) => {
   try {
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      customer_email: email,
+      customer_email: cleanEmail,
       line_items: items.map((p) => ({
         price_data: {
           currency: "usd",
@@ -119,21 +170,25 @@ app.post("/checkout", async (req, res) => {
         },
         quantity: 1
       })),
-      metadata: { name: name, productIds: productIds.join(",") },
+      metadata: { name: cleanName, productIds: productIds.join(",") },
       success_url: BASE_URL + "/success.html?session_id={CHECKOUT_SESSION_ID}",
       cancel_url: BASE_URL + "/"
     });
     res.json({ url: session.url });
   } catch (err) {
     console.error("Stripe error:", err.message);
-    res.status(500).json({ error: "Could not start the payment. Check the black window for details." });
+    res.status(500).json({ error: "Could not start the payment. Please try again." });
   }
 });
 
 // After paying: check with Stripe that the payment is real, then save the order
-app.get("/confirm", async (req, res) => {
+app.get("/confirm", checkoutLimiter, async (req, res) => {
   try {
-    const session = await stripe.checkout.sessions.retrieve(req.query.session_id);
+    const sessionId = String(req.query.session_id || "");
+    if (!sessionId.startsWith("cs_")) {
+      return res.status(400).json({ error: "Could not confirm the payment." });
+    }
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
     if (session.payment_status !== "paid") {
       return res.status(400).json({ error: "Payment was not completed." });
     }
@@ -170,8 +225,8 @@ app.get("/confirm", async (req, res) => {
   }
 });
 
-// See all orders (for you, the owner)
-app.get("/orders", requireAdmin, (req, res) => {
+// See all orders (owner only)
+app.get("/orders", adminLimiter, requireAdmin, (req, res) => {
   const orders = db.prepare("SELECT * FROM orders ORDER BY id DESC").all();
   const getItems = db.prepare("SELECT product_name, price FROM order_items WHERE order_id = ?");
   const result = orders.map((o) => ({ ...o, items: getItems.all(o.id) }));

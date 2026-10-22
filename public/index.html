@@ -24,8 +24,8 @@
     <button onclick="clearCart()">Clear cart</button>
 
     <h3>Checkout</h3>
-    <input id="name" placeholder="Your name">
-    <input id="email" type="email" placeholder="Your email">
+    <input id="name" placeholder="Your name" maxlength="100">
+    <input id="email" type="email" placeholder="Your email" maxlength="200">
     <button onclick="placeOrder()">Place order</button>
     <div id="message"></div>
   </div>
@@ -34,18 +34,28 @@
     let products = [];
     let cart = [];
 
+    // Turns special characters into harmless text, so names can't inject code
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
     async function loadProducts() {
       try {
         const response = await fetch("/products");
         products = await response.json();
         let html = "";
         for (let p of products) {
-          html += '<div class="product"><h3>' + p.name + '</h3><p>$' + p.price +
-            '</p><button onclick="addToCart(' + p.id + ')">Add to cart</button></div>';
+          html += '<div class="product"><h3>' + escapeHtml(p.name) + '</h3><p>$' + escapeHtml(p.price) +
+            '</p><button onclick="addToCart(' + Number(p.id) + ')">Add to cart</button></div>';
         }
         document.getElementById("products").innerHTML = html;
       } catch (err) {
-        document.getElementById("products").innerText = "Could not load products: " + err.message;
+        document.getElementById("products").innerText = "Could not load products. Please refresh.";
       }
     }
 
@@ -63,7 +73,7 @@
       let html = "";
       let total = 0;
       for (let item of cart) {
-        html += "<li>" + item.name + " - $" + item.price + "</li>";
+        html += "<li>" + escapeHtml(item.name) + " - $" + escapeHtml(item.price) + "</li>";
         total += item.price;
       }
       document.getElementById("list").innerHTML = html;

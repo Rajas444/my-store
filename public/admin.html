@@ -1,46 +1,131 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Admin</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin - Products</title>
   <style>
-    body { font-family: Arial; margin: 20px; background: #f7f7f7; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, Arial, sans-serif; background: #f6f7f9; margin: 0; padding: 20px; color: #1a1a1a; }
     h1 { text-align: center; }
-    #box { background: white; max-width: 300px; margin: 20px auto; padding: 20px; border-radius: 8px; }
-    input { width: 100%; padding: 8px; margin: 6px 0 12px; box-sizing: border-box; }
-    button { background: #222; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; }
-    #message { margin-top: 10px; }
+    nav { text-align: center; margin-bottom: 20px; }
+    nav a { color: #4f46e5; margin: 0 8px; }
+    .panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; max-width: 760px; margin: 14px auto; padding: 16px; }
+    .panel h2 { margin: 0 0 10px; font-size: 1.1rem; }
+    label { display: block; font-size: .85rem; color: #6b7280; margin-top: 8px; }
+    input, textarea { width: 100%; padding: 9px; border: 1px solid #e5e7eb; border-radius: 8px; font: inherit; }
+    .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    button { font: inherit; cursor: pointer; border: none; border-radius: 8px; padding: 9px 16px; background: #4f46e5; color: #fff; margin-top: 10px; margin-right: 6px; }
+    button.del { background: #dc2626; }
+    .msg { margin-top: 8px; font-size: .9rem; min-height: 1.2em; }
+    .ok { color: #16a34a; } .bad { color: #dc2626; }
   </style>
 </head>
 <body>
-  <h1>Add a Product</h1>
-  <div id="box">
-    <label>Product name</label>
-    <input id="name" placeholder="e.g. Blue T-shirt">
-    <label>Price</label>
-    <input id="price" type="number" placeholder="e.g. 25">
-    <button onclick="addProduct()">Add product</button>
-    <div id="message"></div>
+  <h1>Products</h1>
+  <nav><a href="/">Store</a> <a href="/orders.html">Orders</a></nav>
+
+  <div class="panel">
+    <h2>Add a product</h2>
+    <label>Name</label><input id="new-name" maxlength="100">
+    <div class="two">
+      <div><label>Price (USD)</label><input id="new-price" type="number" step="0.01" min="0"></div>
+      <div><label>Stock</label><input id="new-stock" type="number" min="0" value="10"></div>
+    </div>
+    <label>Image link (starts with https://, optional)</label><input id="new-image" maxlength="500">
+    <label>Description (optional)</label><textarea id="new-desc" rows="2" maxlength="500"></textarea>
+    <button id="addBtn">Add product</button>
+    <div class="msg" id="add-msg"></div>
   </div>
 
+  <div id="list"></div>
+
   <script>
-    async function addProduct() {
-      const name = document.getElementById("name").value;
-      const price = Number(document.getElementById("price").value);
+    function setMsg(el, text, good) {
+      el.textContent = text;
+      el.className = "msg " + (good ? "ok" : "bad");
+    }
 
-      const response = await fetch("/products", {
-        method: "POST",
+    async function send(method, url, body) {
+      const response = await fetch(url, {
+        method: method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name, price: price })
+        body: body ? JSON.stringify(body) : undefined
       });
+      let data = {};
+      try { data = await response.json(); } catch (e) {}
+      return { ok: response.ok, data: data };
+    }
 
-      if (response.ok) {
-        document.getElementById("message").innerText = "Added! Check the store page.";
-        document.getElementById("name").value = "";
-        document.getElementById("price").value = "";
-      } else {
-        document.getElementById("message").innerText = "Something went wrong. Check the name and price.";
+    function readFields(prefix, root) {
+      return {
+        name: root.querySelector("." + prefix + "-name").value,
+        price: Number(root.querySelector("." + prefix + "-price").value),
+        stock: Number(root.querySelector("." + prefix + "-stock").value),
+        image_url: root.querySelector("." + prefix + "-image").value,
+        description: root.querySelector("." + prefix + "-desc").value
+      };
+    }
+
+    async function loadList() {
+      const response = await fetch("/products");
+      const products = await response.json();
+      const list = document.getElementById("list");
+      list.innerHTML = "";
+
+      for (const p of products) {
+        const box = document.createElement("div");
+        box.className = "panel";
+        box.innerHTML =
+          '<label>Name</label><input class="e-name" maxlength="100">' +
+          '<div class="two"><div><label>Price (USD)</label><input class="e-price" type="number" step="0.01" min="0"></div>' +
+          '<div><label>Stock</label><input class="e-stock" type="number" min="0"></div></div>' +
+          '<label>Image link</label><input class="e-image" maxlength="500">' +
+          '<label>Description</label><textarea class="e-desc" rows="2" maxlength="500"></textarea>' +
+          '<button class="save">Save</button><button class="del">Delete</button><div class="msg"></div>';
+
+        // Values are set as plain text, never as HTML
+        box.querySelector(".e-name").value = p.name;
+        box.querySelector(".e-price").value = p.price;
+        box.querySelector(".e-stock").value = p.stock;
+        box.querySelector(".e-image").value = p.image_url || "";
+        box.querySelector(".e-desc").value = p.description || "";
+
+        const msg = box.querySelector(".msg");
+        box.querySelector(".save").addEventListener("click", async () => {
+          const result = await send("PUT", "/products/" + p.id, readFields("e", box));
+          setMsg(msg, result.ok ? "Saved." : (result.data.error || "Could not save."), result.ok);
+        });
+        box.querySelector(".del").addEventListener("click", async () => {
+          if (!confirm("Delete this product? Past orders are kept.")) return;
+          const result = await send("DELETE", "/products/" + p.id);
+          if (result.ok) loadList();
+          else setMsg(msg, result.data.error || "Could not delete.", false);
+        });
+        list.appendChild(box);
       }
     }
+
+    document.getElementById("addBtn").addEventListener("click", async () => {
+      const msg = document.getElementById("add-msg");
+      const body = {
+        name: document.getElementById("new-name").value,
+        price: Number(document.getElementById("new-price").value),
+        stock: Number(document.getElementById("new-stock").value),
+        image_url: document.getElementById("new-image").value,
+        description: document.getElementById("new-desc").value
+      };
+      const result = await send("POST", "/products", body);
+      if (result.ok) {
+        setMsg(msg, "Added!", true);
+        for (const id of ["new-name", "new-price", "new-image", "new-desc"]) document.getElementById(id).value = "";
+        loadList();
+      } else {
+        setMsg(msg, result.data.error || "Could not add.", false);
+      }
+    });
+
+    loadList();
   </script>
 </body>
 </html>

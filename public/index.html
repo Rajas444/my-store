@@ -66,6 +66,11 @@
     #toast.show { transform: translateX(-50%) translateY(0); }
 
     footer { text-align: center; color: var(--muted); padding: 30px 20px; font-size: .9rem; }
+      .thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .desc { color: var(--muted); font-size: .9rem; }
+    .stock { font-size: .85rem; color: var(--muted); }
+    .stock.low { color: var(--danger); }
+    .add:disabled { opacity: .5; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -155,14 +160,22 @@
         box.innerHTML = '<div class="note">No products yet. Please check back soon.</div>';
         return;
       }
-      box.innerHTML = products.map((p) => {
+            box.innerHTML = products.map((p) => {
         const hue = (Number(p.id) * 47) % 360;
         const letter = escapeHtml(String(p.name).trim().charAt(0).toUpperCase() || "?");
+        const picture = p.image_url
+          ? '<img src="' + escapeHtml(p.image_url) + '" alt="">'
+          : letter;
+        const stockText = p.stock === 0 ? "Sold out"
+          : p.stock <= 5 ? "Only " + p.stock + " left" : "In stock";
         return '<div class="card">' +
-          '<div class="thumb" style="background:hsl(' + hue + ' 70% 90%)">' + letter + '</div>' +
+          '<div class="thumb" style="background:hsl(' + hue + ' 70% 90%)">' + picture + '</div>' +
           '<div class="card-body"><h3>' + escapeHtml(p.name) + '</h3>' +
+          (p.description ? '<div class="desc">' + escapeHtml(p.description) + '</div>' : '') +
           '<div class="price">' + escapeHtml(money(p.price)) + '</div>' +
-          '<button class="add" data-add="' + Number(p.id) + '">Add to cart</button></div></div>';
+          '<div class="stock' + (p.stock <= 5 ? ' low' : '') + '">' + stockText + '</div>' +
+          '<button class="add" data-add="' + Number(p.id) + '"' + (p.stock === 0 ? ' disabled' : '') + '>' +
+          (p.stock === 0 ? 'Sold out' : 'Add to cart') + '</button></div></div>';
       }).join("");
 
       // forget cart items for products that no longer exist
@@ -171,8 +184,10 @@
       showCart();
     }
 
-    function addToCart(id) {
+        function addToCart(id) {
+      const p = products.find((x) => x.id === id);
       const line = cart.find((c) => c.id === id);
+      if (p && (line ? line.qty : 0) >= p.stock) { toast("No more in stock"); return; }
       if (line) line.qty += 1; else cart.push({ id: id, qty: 1 });
       saveCart();
       showCart();
@@ -180,14 +195,16 @@
     }
 
     function changeQty(id, change) {
+      const p = products.find((x) => x.id === id);
       const line = cart.find((c) => c.id === id);
       if (!line) return;
+      if (change > 0 && p && line.qty >= p.stock) { toast("No more in stock"); return; }
       line.qty += change;
       if (line.qty <= 0) cart = cart.filter((c) => c.id !== id);
       saveCart();
       showCart();
     }
-
+    
     function removeItem(id) {
       cart = cart.filter((c) => c.id !== id);
       saveCart();

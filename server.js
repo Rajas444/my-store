@@ -54,16 +54,18 @@ db.exec(`
   );
 `);
 
-try {
-  db.exec("ALTER TABLE orders ADD COLUMN stripe_session_id TEXT");
-} catch (e) {
-  // Column already exists, nothing to do
+// Add new columns to older databases (errors mean the column already exists)
+const newColumns = [
+  "ALTER TABLE orders ADD COLUMN stripe_session_id TEXT",
+  "ALTER TABLE products ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE products ADD COLUMN image_url TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 10"
+];
+for (const sql of newColumns) {
+  try { db.exec(sql); } catch (e) { /* already there */ }
 }
 
-// Each Stripe payment can be saved only once
-db.exec(
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_session ON orders(stripe_session_id)"
-);
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_session ON orders(stripe_session_id)");
 
 const count = db.prepare("SELECT COUNT(*) AS n FROM products").get().n;
 if (count === 0) {
@@ -73,7 +75,29 @@ if (count === 0) {
   insert.run("Product 3", 20);
 }
 
-// Saves a paid Stripe session as an order. Safe to call twice for the same payment.
+// Checks product details sent by the admin page. Returns { error } or { value }.
+function parseProduct(body) {
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const description = typeof body.description === "string" ? body.description.trim() : "";
+  const imageUrl = typeof body.image_url === "string" ? body.image_url.trim() : "";
+  const price = body.price;
+  const stock = body.stock;
+
+  if (name.length === 0 || name.length > 100) return { error: "Name must be 1 to 100 letters." };
+  if (typeof price !== "number" || !Number.isFinite(price) || price <= 0 || price > 100000) {
+    return { error: "Price must be above 0." };
+  }
+  if (!Number.isInteger(stock) || stock < 0 || stock > 100000) {
+    return { error: "Stock must be a whole number, 0 or more." };
+  }
+  if (description.length > 500) return { error: "Description is too long (500 letters max)." };
+  if (imageUrl.length > 500 || (imageUrl !== "" && !/^https:\/\//i.test(imageUrl))) {
+    return { error: "Image link must start with https://" };
+  }
+  return { value: { name, description, imageUrl, price, stock } };
+}
+
+// Saves a paid Stripe session as an order and lowers stock. Safe to call twice.
 function saveOrderFromSession(session) {
   const existing = db
     .prepare("SELECT id, total FROM orders WHERE stripe_session_id = ?")
@@ -101,7 +125,13 @@ function saveOrderFromSession(session) {
     const insertItem = db.prepare(
       "INSERT INTO order_items (order_id, product_name, price) VALUES (?, ?, ?)"
     );
-    for (const p of items) insertItem.run(newId, p.name, p.price);
+    const lowerStock = db.prepare(
+      "UPDATE products SET stock = MAX(stock - 1, 0) WHERE id = ?"
+    );
+    for (const p of items) {
+      insertItem.run(newId, p.name, p.price);
+      lowerStock.run(p.id);
+    }
     return newId;
   });
 
@@ -109,7 +139,7 @@ function saveOrderFromSession(session) {
 }
 
 // Stripe calls this by itself when a payment succeeds.
-// It must come BEFORE express.json(), because it needs the raw body to check Stripe's signature.
+// It must come BEFORE express.json(), because it needs the raw body.
 app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
   let event;
   try {
@@ -170,26 +200,35 @@ app.use(express.json({ limit: "10kb" }));
 app.use(express.static("public"));
 
 app.get("/products", (req, res) => {
-  res.json(db.prepare("SELECT * FROM products").all());
+  res.json(db.prepare("SELECT * FROM products ORDER BY id").all());
 });
 
 app.post("/products", adminLimiter, requireAdmin, (req, res) => {
-  const { name, price } = req.body;
-  const cleanName = typeof name === "string" ? name.trim() : "";
-  if (
-    cleanName.length === 0 ||
-    cleanName.length > 100 ||
-    typeof price !== "number" ||
-    !Number.isFinite(price) ||
-    price <= 0 ||
-    price > 100000
-  ) {
-    return res.status(400).json({ error: "Please send a name (up to 100 letters) and a price above 0." });
-  }
+  const parsed = parseProduct(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const p = parsed.value;
   const result = db
-    .prepare("INSERT INTO products (name, price) VALUES (?, ?)")
-    .run(cleanName, price);
-  res.json({ id: Number(result.lastInsertRowid), name: cleanName, price });
+    .prepare("INSERT INTO products (name, price, description, image_url, stock) VALUES (?, ?, ?, ?, ?)")
+    .run(p.name, p.price, p.description, p.imageUrl, p.stock);
+  res.json({ id: Number(result.lastInsertRowid) });
+});
+
+app.put("/products/:id", adminLimiter, requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const parsed = parseProduct(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const p = parsed.value;
+  const result = db
+    .prepare("UPDATE products SET name = ?, price = ?, description = ?, image_url = ?, stock = ? WHERE id = ?")
+    .run(p.name, p.price, p.description, p.imageUrl, p.stock, id);
+  if (result.changes === 0) return res.status(404).json({ error: "Product not found." });
+  res.json({ ok: true });
+});
+
+app.delete("/products/:id", adminLimiter, requireAdmin, (req, res) => {
+  const result = db.prepare("DELETE FROM products WHERE id = ?").run(Number(req.params.id));
+  if (result.changes === 0) return res.status(404).json({ error: "Product not found." });
+  res.json({ ok: true });
 });
 
 app.post("/checkout", checkoutLimiter, async (req, res) => {
@@ -214,9 +253,18 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
 
   const getProduct = db.prepare("SELECT * FROM products WHERE id = ?");
   const items = [];
+  const wanted = {};
   for (const id of productIds) {
     const product = getProduct.get(id);
-    if (!product) return res.status(400).json({ error: "Unknown product." });
+    if (!product) return res.status(400).json({ error: "A product in your cart is no longer available." });
+    wanted[id] = (wanted[id] || 0) + 1;
+    if (wanted[id] > product.stock) {
+      return res.status(400).json({
+        error: product.stock === 0
+          ? product.name + " is sold out."
+          : "Only " + product.stock + " of " + product.name + " left."
+      });
+    }
     items.push(product);
   }
 
@@ -243,7 +291,6 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
   }
 });
 
-// The success page asks this. It uses the same save function as the webhook.
 app.get("/confirm", checkoutLimiter, async (req, res) => {
   try {
     const sessionId = String(req.query.session_id || "");

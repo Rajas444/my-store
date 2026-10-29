@@ -14,14 +14,13 @@ const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
 if (!process.env.ADMIN_PASSWORD) {
   console.warn("WARNING: ADMIN_PASSWORD is not set. Admin pages will stay locked.");
 }
+if (!process.env.STRIPE_WEBHOOK_SECRET) {
+  console.warn("WARNING: STRIPE_WEBHOOK_SECRET is not set. The webhook will be rejected.");
+}
 
-// Needed when the site runs behind a host like Render
 app.set("trust proxy", 1);
-
-// Standard security headers
 app.use(helmet({ contentSecurityPolicy: false }));
 
-// Saves several things together, or none of them if something fails
 function inTransaction(work) {
   db.exec("BEGIN");
   try {
@@ -55,12 +54,16 @@ db.exec(`
   );
 `);
 
-// Remember which Stripe payment each order belongs to
 try {
   db.exec("ALTER TABLE orders ADD COLUMN stripe_session_id TEXT");
 } catch (e) {
   // Column already exists, nothing to do
 }
+
+// Each Stripe payment can be saved only once
+db.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_session ON orders(stripe_session_id)"
+);
 
 const count = db.prepare("SELECT COUNT(*) AS n FROM products").get().n;
 if (count === 0) {
@@ -70,11 +73,75 @@ if (count === 0) {
   insert.run("Product 3", 20);
 }
 
-// Limits: slow down guessing and spamming
+// Saves a paid Stripe session as an order. Safe to call twice for the same payment.
+function saveOrderFromSession(session) {
+  const existing = db
+    .prepare("SELECT id, total FROM orders WHERE stripe_session_id = ?")
+    .get(session.id);
+  if (existing) return { orderId: Number(existing.id), total: existing.total };
+
+  const getProduct = db.prepare("SELECT * FROM products WHERE id = ?");
+  const ids = String(session.metadata.productIds).split(",").map(Number);
+  const items = ids.map((id) => getProduct.get(id)).filter(Boolean);
+  const total = items.reduce((sum, p) => sum + p.price, 0);
+
+  const orderId = inTransaction(() => {
+    const result = db
+      .prepare(
+        "INSERT INTO orders (customer_name, customer_email, total, created_at, stripe_session_id) VALUES (?, ?, ?, ?, ?)"
+      )
+      .run(
+        session.metadata.name,
+        session.customer_email || (session.customer_details && session.customer_details.email) || "unknown",
+        total,
+        new Date().toISOString(),
+        session.id
+      );
+    const newId = Number(result.lastInsertRowid);
+    const insertItem = db.prepare(
+      "INSERT INTO order_items (order_id, product_name, price) VALUES (?, ?, ?)"
+    );
+    for (const p of items) insertItem.run(newId, p.name, p.price);
+    return newId;
+  });
+
+  return { orderId: orderId, total: total };
+}
+
+// Stripe calls this by itself when a payment succeeds.
+// It must come BEFORE express.json(), because it needs the raw body to check Stripe's signature.
+app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      req.headers["stripe-signature"],
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error("Webhook signature check failed:", err.message);
+    return res.status(400).send("Invalid signature");
+  }
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    if (session.payment_status === "paid") {
+      try {
+        const saved = saveOrderFromSession(session);
+        console.log("Webhook saved order #" + saved.orderId);
+      } catch (err) {
+        console.error("Webhook could not save order:", err.message);
+        return res.status(500).send("Could not save order");
+      }
+    }
+  }
+  res.json({ received: true });
+});
+
 const adminLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  skipSuccessfulRequests: true, // only failed password attempts count
+  skipSuccessfulRequests: true,
   message: "Too many failed attempts. Try again in 15 minutes."
 });
 const checkoutLimiter = rateLimit({
@@ -83,7 +150,6 @@ const checkoutLimiter = rateLimit({
   message: { error: "Too many requests. Please try again later." }
 });
 
-// Password check for admin pages (compares in a way that can't be timed)
 function requireAdmin(req, res, next) {
   const expected = process.env.ADMIN_PASSWORD;
   const header = req.headers.authorization || "";
@@ -103,12 +169,10 @@ app.use(["/admin.html", "/orders.html"], adminLimiter, requireAdmin);
 app.use(express.json({ limit: "10kb" }));
 app.use(express.static("public"));
 
-// Get all products
 app.get("/products", (req, res) => {
   res.json(db.prepare("SELECT * FROM products").all());
 });
 
-// Add a new product (owner only)
 app.post("/products", adminLimiter, requireAdmin, (req, res) => {
   const { name, price } = req.body;
   const cleanName = typeof name === "string" ? name.trim() : "";
@@ -128,7 +192,6 @@ app.post("/products", adminLimiter, requireAdmin, (req, res) => {
   res.json({ id: Number(result.lastInsertRowid), name: cleanName, price });
 });
 
-// Start a payment: send the customer to Stripe's secure payment page
 app.post("/checkout", checkoutLimiter, async (req, res) => {
   const { name, email, productIds } = req.body;
 
@@ -149,7 +212,6 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
     return res.status(400).json({ error: "Please check your name, email and cart." });
   }
 
-  // Prices come from our database, never from the browser
   const getProduct = db.prepare("SELECT * FROM products WHERE id = ?");
   const items = [];
   for (const id of productIds) {
@@ -166,7 +228,7 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
         price_data: {
           currency: "usd",
           product_data: { name: p.name },
-          unit_amount: Math.round(p.price * 100) // Stripe uses cents
+          unit_amount: Math.round(p.price * 100)
         },
         quantity: 1
       })),
@@ -181,7 +243,7 @@ app.post("/checkout", checkoutLimiter, async (req, res) => {
   }
 });
 
-// After paying: check with Stripe that the payment is real, then save the order
+// The success page asks this. It uses the same save function as the webhook.
 app.get("/confirm", checkoutLimiter, async (req, res) => {
   try {
     const sessionId = String(req.query.session_id || "");
@@ -192,45 +254,17 @@ app.get("/confirm", checkoutLimiter, async (req, res) => {
     if (session.payment_status !== "paid") {
       return res.status(400).json({ error: "Payment was not completed." });
     }
-
-    // If this payment was already saved (page refreshed), don't save it twice
-    const existing = db
-      .prepare("SELECT id, total FROM orders WHERE stripe_session_id = ?")
-      .get(session.id);
-    if (existing) return res.json({ orderId: Number(existing.id), total: existing.total });
-
-    const getProduct = db.prepare("SELECT * FROM products WHERE id = ?");
-    const ids = session.metadata.productIds.split(",").map(Number);
-    const items = ids.map((id) => getProduct.get(id)).filter(Boolean);
-    const total = items.reduce((sum, p) => sum + p.price, 0);
-
-    const orderId = inTransaction(() => {
-      const result = db
-        .prepare(
-          "INSERT INTO orders (customer_name, customer_email, total, created_at, stripe_session_id) VALUES (?, ?, ?, ?, ?)"
-        )
-        .run(session.metadata.name, session.customer_email, total, new Date().toISOString(), session.id);
-      const newId = Number(result.lastInsertRowid);
-      const insertItem = db.prepare(
-        "INSERT INTO order_items (order_id, product_name, price) VALUES (?, ?, ?)"
-      );
-      for (const p of items) insertItem.run(newId, p.name, p.price);
-      return newId;
-    });
-
-    res.json({ orderId: orderId, total: total });
+    res.json(saveOrderFromSession(session));
   } catch (err) {
     console.error("Confirm error:", err.message);
     res.status(400).json({ error: "Could not confirm the payment." });
   }
 });
 
-// See all orders (owner only)
 app.get("/orders", adminLimiter, requireAdmin, (req, res) => {
   const orders = db.prepare("SELECT * FROM orders ORDER BY id DESC").all();
   const getItems = db.prepare("SELECT product_name, price FROM order_items WHERE order_id = ?");
-  const result = orders.map((o) => ({ ...o, items: getItems.all(o.id) }));
-  res.json(result);
+  res.json(orders.map((o) => ({ ...o, items: getItems.all(o.id) })));
 });
 
 const PORT = process.env.PORT || 3000;

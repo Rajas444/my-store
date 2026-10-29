@@ -1,109 +1,271 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>My Store</title>
   <style>
-    body { font-family: Arial; margin: 20px; background: #f7f7f7; }
-    h1 { text-align: center; }
-    .product { background: white; padding: 15px; margin: 10px auto; max-width: 300px; border-radius: 8px; text-align: center; }
-    button { background: #222; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; }
-    #cart { background: white; max-width: 300px; margin: 20px auto; padding: 15px; border-radius: 8px; }
-    #total { font-weight: bold; margin: 10px 0; }
-    input { width: 100%; padding: 8px; margin: 6px 0; box-sizing: border-box; }
-    #message { margin-top: 10px; }
+    :root {
+      --bg: #f6f7f9; --card: #ffffff; --text: #1a1a1a; --muted: #6b7280;
+      --brand: #4f46e5; --brand-dark: #4338ca; --border: #e5e7eb; --danger: #dc2626;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif; background: var(--bg); color: var(--text); }
+    button { font: inherit; cursor: pointer; }
+
+    header { position: sticky; top: 0; z-index: 10; background: var(--card); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; }
+    .logo { font-size: 1.25rem; font-weight: 700; }
+    .cart-btn { position: relative; background: var(--brand); color: #fff; border: none; padding: 10px 16px; border-radius: 10px; font-weight: 600; }
+    .cart-btn:hover { background: var(--brand-dark); }
+    #badge { background: #fff; color: var(--brand); border-radius: 999px; padding: 1px 8px; margin-left: 6px; font-size: 0.85rem; }
+
+    .hero { text-align: center; padding: 40px 20px 10px; }
+    .hero h1 { margin: 0 0 8px; font-size: 2rem; }
+    .hero p { margin: 0; color: var(--muted); }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 18px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; transition: transform .15s, box-shadow .15s; }
+    .card:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,.08); }
+    .thumb { height: 150px; display: flex; align-items: center; justify-content: center; font-size: 3rem; font-weight: 700; color: rgba(0,0,0,.35); }
+    .card-body { padding: 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+    .card-body h3 { margin: 0; font-size: 1.05rem; }
+    .price { font-weight: 700; font-size: 1.1rem; }
+    .add { margin-top: auto; background: var(--text); color: #fff; border: none; padding: 10px; border-radius: 10px; font-weight: 600; }
+    .add:hover { background: #000; }
+    .note { text-align: center; color: var(--muted); padding: 30px; }
+
+    #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 20; }
+    #overlay.open { opacity: 1; pointer-events: auto; }
+    #drawer { position: fixed; top: 0; right: 0; height: 100%; width: min(400px, 100%); background: var(--card); z-index: 30;
+      transform: translateX(100%); transition: transform .25s; display: flex; flex-direction: column; box-shadow: -8px 0 24px rgba(0,0,0,.12); }
+    #drawer.open { transform: translateX(0); }
+    .drawer-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+    .drawer-head h2 { margin: 0; font-size: 1.2rem; }
+    .close { background: none; border: none; font-size: 1.6rem; line-height: 1; color: var(--muted); }
+    #items { flex: 1; overflow-y: auto; padding: 8px 18px; }
+    .row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .row .info { flex: 1; min-width: 0; }
+    .row .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row .each { color: var(--muted); font-size: .9rem; }
+    .qty { display: flex; align-items: center; gap: 8px; }
+    .qty button { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--border); background: #fff; }
+    .rm { background: none; border: none; color: var(--danger); font-size: .85rem; }
+    .drawer-foot { padding: 16px 18px; border-top: 1px solid var(--border); }
+    .total-row { display: flex; justify-content: space-between; font-weight: 700; font-size: 1.1rem; margin-bottom: 12px; }
+    input { width: 100%; padding: 11px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 10px; font: inherit; }
+    input:focus { outline: 2px solid var(--brand); border-color: transparent; }
+    .pay { width: 100%; background: var(--brand); color: #fff; border: none; padding: 13px; border-radius: 10px; font-weight: 700; font-size: 1rem; }
+    .pay:hover { background: var(--brand-dark); }
+    .pay:disabled { opacity: .6; cursor: wait; }
+    #message { margin-top: 8px; color: var(--danger); font-size: .9rem; min-height: 1.2em; }
+
+    #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: var(--text); color: #fff;
+      padding: 10px 18px; border-radius: 999px; transition: transform .25s; z-index: 40; }
+    #toast.show { transform: translateX(-50%) translateY(0); }
+
+    footer { text-align: center; color: var(--muted); padding: 30px 20px; font-size: .9rem; }
   </style>
 </head>
 <body>
-  <h1>My Store</h1>
-  <div id="products">Loading...</div>
+  <header>
+    <div class="logo">🛍️ My Store</div>
+    <button class="cart-btn" id="openCart">Cart <span id="badge">0</span></button>
+  </header>
 
-  <div id="cart">
-    <h3>Your Cart</h3>
-    <ul id="list"></ul>
-    <div id="total">Total: $0</div>
-    <button onclick="clearCart()">Clear cart</button>
-
-    <h3>Checkout</h3>
-    <input id="name" placeholder="Your name" maxlength="100">
-    <input id="email" type="email" placeholder="Your email" maxlength="200">
-    <button onclick="placeOrder()">Place order</button>
-    <div id="message"></div>
+  <div class="hero">
+    <h1>Welcome to My Store</h1>
+    <p>Pick what you like. Secure checkout by Stripe.</p>
   </div>
+
+  <main>
+    <div id="products" class="grid"><div class="note">Loading products...</div></div>
+  </main>
+
+  <footer>© My Store. Payments are processed securely by Stripe.</footer>
+
+  <div id="overlay"></div>
+  <aside id="drawer" aria-label="Shopping cart">
+    <div class="drawer-head"><h2>Your cart</h2><button class="close" id="closeCart" aria-label="Close cart">×</button></div>
+    <div id="items"></div>
+    <div class="drawer-foot">
+      <div class="total-row"><span>Total</span><span id="total">$0.00</span></div>
+      <input id="name" placeholder="Your name" maxlength="100" autocomplete="name">
+      <input id="email" type="email" placeholder="Your email" maxlength="200" autocomplete="email">
+      <button class="pay" id="payBtn">Pay securely</button>
+      <div id="message"></div>
+    </div>
+  </aside>
+
+  <div id="toast"></div>
 
   <script>
     let products = [];
-    let cart = [];
+    let cart = []; // list of { id, qty }
+
+    const money = (n) => "$" + Number(n).toFixed(2);
 
     // Turns special characters into harmless text, so names can't inject code
     function escapeHtml(text) {
       return String(text)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function loadCart() {
+      try {
+        const saved = JSON.parse(localStorage.getItem("cart") || "[]");
+        if (Array.isArray(saved)) {
+          cart = saved.filter((c) => Number.isInteger(c.id) && Number.isInteger(c.qty) && c.qty > 0);
+        }
+      } catch (e) { cart = []; }
+    }
+    function saveCart() {
+      try { localStorage.setItem("cart", JSON.stringify(cart)); } catch (e) {}
+    }
+
+    function toast(text) {
+      const t = document.getElementById("toast");
+      t.textContent = text;
+      t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 1600);
+    }
+
+    function openCart() {
+      document.getElementById("drawer").classList.add("open");
+      document.getElementById("overlay").classList.add("open");
+    }
+    function closeCart() {
+      document.getElementById("drawer").classList.remove("open");
+      document.getElementById("overlay").classList.remove("open");
     }
 
     async function loadProducts() {
+      const box = document.getElementById("products");
       try {
         const response = await fetch("/products");
+        if (!response.ok) throw new Error("bad response");
         products = await response.json();
-        let html = "";
-        for (let p of products) {
-          html += '<div class="product"><h3>' + escapeHtml(p.name) + '</h3><p>$' + escapeHtml(p.price) +
-            '</p><button onclick="addToCart(' + Number(p.id) + ')">Add to cart</button></div>';
-        }
-        document.getElementById("products").innerHTML = html;
       } catch (err) {
-        document.getElementById("products").innerText = "Could not load products. Please refresh.";
+        box.innerHTML = '<div class="note">Could not load products. Please refresh.</div>';
+        return;
       }
-    }
+      if (products.length === 0) {
+        box.innerHTML = '<div class="note">No products yet. Please check back soon.</div>';
+        return;
+      }
+      box.innerHTML = products.map((p) => {
+        const hue = (Number(p.id) * 47) % 360;
+        const letter = escapeHtml(String(p.name).trim().charAt(0).toUpperCase() || "?");
+        return '<div class="card">' +
+          '<div class="thumb" style="background:hsl(' + hue + ' 70% 90%)">' + letter + '</div>' +
+          '<div class="card-body"><h3>' + escapeHtml(p.name) + '</h3>' +
+          '<div class="price">' + escapeHtml(money(p.price)) + '</div>' +
+          '<button class="add" data-add="' + Number(p.id) + '">Add to cart</button></div></div>';
+      }).join("");
 
-    function addToCart(id) {
-      cart.push(products.find(p => p.id === id));
+      // forget cart items for products that no longer exist
+      cart = cart.filter((c) => products.some((p) => p.id === c.id));
+      saveCart();
       showCart();
     }
 
-    function clearCart() {
-      cart = [];
+    function addToCart(id) {
+      const line = cart.find((c) => c.id === id);
+      if (line) line.qty += 1; else cart.push({ id: id, qty: 1 });
+      saveCart();
+      showCart();
+      toast("Added to cart");
+    }
+
+    function changeQty(id, change) {
+      const line = cart.find((c) => c.id === id);
+      if (!line) return;
+      line.qty += change;
+      if (line.qty <= 0) cart = cart.filter((c) => c.id !== id);
+      saveCart();
+      showCart();
+    }
+
+    function removeItem(id) {
+      cart = cart.filter((c) => c.id !== id);
+      saveCart();
       showCart();
     }
 
     function showCart() {
-      let html = "";
+      let count = 0;
       let total = 0;
-      for (let item of cart) {
-        html += "<li>" + escapeHtml(item.name) + " - $" + escapeHtml(item.price) + "</li>";
-        total += item.price;
+      let html = "";
+      for (const line of cart) {
+        const p = products.find((x) => x.id === line.id);
+        if (!p) continue;
+        count += line.qty;
+        total += p.price * line.qty;
+        html += '<div class="row"><div class="info"><div class="name">' + escapeHtml(p.name) + '</div>' +
+          '<div class="each">' + escapeHtml(money(p.price)) + ' each</div>' +
+          '<button class="rm" data-rm="' + Number(p.id) + '">Remove</button></div>' +
+          '<div class="qty"><button data-dec="' + Number(p.id) + '">−</button><span>' + line.qty +
+          '</span><button data-inc="' + Number(p.id) + '">+</button></div></div>';
       }
-      document.getElementById("list").innerHTML = html;
-      document.getElementById("total").innerText = "Total: $" + total;
+      document.getElementById("items").innerHTML = html || '<div class="note">Your cart is empty.</div>';
+      document.getElementById("total").textContent = money(total);
+      document.getElementById("badge").textContent = count;
     }
 
     async function placeOrder() {
       const message = document.getElementById("message");
+      const button = document.getElementById("payBtn");
+      message.textContent = "";
+
+      const ids = [];
+      for (const line of cart) {
+        for (let i = 0; i < line.qty; i++) ids.push(line.id);
+      }
+      if (ids.length === 0) { message.textContent = "Your cart is empty."; return; }
+      if (ids.length > 20) { message.textContent = "Please order 20 items or fewer at a time."; return; }
+
       const name = document.getElementById("name").value;
       const email = document.getElementById("email").value;
 
-      if (cart.length === 0) {
-        message.innerText = "Your cart is empty.";
-        return;
+      button.disabled = true;
+      button.textContent = "Please wait...";
+      try {
+        const response = await fetch("/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name, email: email, productIds: ids })
+        });
+        const data = await response.json();
+        if (response.ok) {
+          window.location = data.url; // go to Stripe's payment page
+          return;
+        }
+        message.textContent = data.error || "Something went wrong.";
+      } catch (err) {
+        message.textContent = "Could not reach the store. Check your connection.";
       }
-
-      const response = await fetch("/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name, email: email, productIds: cart.map(p => p.id) })
-      });
-      const data = await response.json();
-
-      if (response.ok) {
-        window.location = data.url; // go to Stripe's payment page
-      } else {
-        message.innerText = data.error;
-      }
+      button.disabled = false;
+      button.textContent = "Pay securely";
     }
 
+    // One listener handles every button, so nothing is wired by hand
+    document.addEventListener("click", (e) => {
+      const el = e.target.closest("button");
+      if (!el) return;
+      if (el.dataset.add) addToCart(Number(el.dataset.add));
+      else if (el.dataset.inc) changeQty(Number(el.dataset.inc), 1);
+      else if (el.dataset.dec) changeQty(Number(el.dataset.dec), -1);
+      else if (el.dataset.rm) removeItem(Number(el.dataset.rm));
+    });
+    document.getElementById("openCart").addEventListener("click", openCart);
+    document.getElementById("closeCart").addEventListener("click", closeCart);
+    document.getElementById("overlay").addEventListener("click", closeCart);
+    document.getElementById("payBtn").addEventListener("click", placeOrder);
+
+    loadCart();
+    showCart();
     loadProducts();
   </script>
 </body>

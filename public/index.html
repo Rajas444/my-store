@@ -88,7 +88,7 @@
     <div id="products" class="grid"><div class="note">Loading products...</div></div>
   </main>
 
-  <footer>© My Store. Payments are processed securely by Stripe.</footer>
+    <footer>© My Store. Payments are processed securely by Stripe. · <a href="/track.html">Track your order</a></footer>
 
   <div id="overlay"></div>
   <aside id="drawer" aria-label="Shopping cart">
@@ -204,7 +204,7 @@
       saveCart();
       showCart();
     }
-    
+
     function removeItem(id) {
       cart = cart.filter((c) => c.id !== id);
       saveCart();
@@ -281,9 +281,16 @@
     document.getElementById("overlay").addEventListener("click", closeCart);
     document.getElementById("payBtn").addEventListener("click", placeOrder);
 
-    loadCart();
+        loadCart();
     showCart();
     loadProducts();
+
+    // Live updates: reload products when stock or products change
+    try {
+      const stream = new EventSource("/events");
+      stream.addEventListener("products", () => loadProducts());
+    } catch (e) {}
+
   </script>
 </body>
 </html>

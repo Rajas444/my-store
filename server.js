@@ -21,6 +21,35 @@ if (!process.env.STRIPE_WEBHOOK_SECRET) {
 app.set("trust proxy", 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 
+// ---------- Real-time (Server-Sent Events) ----------
+const publicClients = new Set(); // customers' browsers
+const adminClients = new Set();  // the owner's browser
+
+function openStream(set) {
+  return (req, res) => {
+    res.set({
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive"
+    });
+    res.flushHeaders();
+    res.write("retry: 3000\n\n");
+    set.add(res);
+    req.on("close", () => set.delete(res));
+  };
+}
+
+function broadcast(set, eventName, data) {
+  const message = "event: " + eventName + "\ndata: " + JSON.stringify(data) + "\n\n";
+  for (const client of set) client.write(message);
+}
+
+// Keeps connections alive through hosting proxies
+setInterval(() => {
+  for (const client of publicClients) client.write(": ping\n\n");
+  for (const client of adminClients) client.write(": ping\n\n");
+}, 25000);
+
 function inTransaction(work) {
   db.exec("BEGIN");
   try {
@@ -57,6 +86,7 @@ db.exec(`
 // Add new columns to older databases (errors mean the column already exists)
 const newColumns = [
   "ALTER TABLE orders ADD COLUMN stripe_session_id TEXT",
+  "ALTER TABLE orders ADD COLUMN status TEXT NOT NULL DEFAULT 'paid'",
   "ALTER TABLE products ADD COLUMN description TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE products ADD COLUMN image_url TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 10"
@@ -75,7 +105,8 @@ if (count === 0) {
   insert.run("Product 3", 20);
 }
 
-// Checks product details sent by the admin page. Returns { error } or { value }.
+const STATUSES = ["paid", "packed", "shipped"];
+
 function parseProduct(body) {
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const description = typeof body.description === "string" ? body.description.trim() : "";
@@ -102,12 +133,13 @@ function saveOrderFromSession(session) {
   const existing = db
     .prepare("SELECT id, total FROM orders WHERE stripe_session_id = ?")
     .get(session.id);
-  if (existing) return { orderId: Number(existing.id), total: existing.total };
+  if (existing) return { orderId: Number(existing.id), total: existing.total, created: false };
 
   const getProduct = db.prepare("SELECT * FROM products WHERE id = ?");
   const ids = String(session.metadata.productIds).split(",").map(Number);
   const items = ids.map((id) => getProduct.get(id)).filter(Boolean);
   const total = items.reduce((sum, p) => sum + p.price, 0);
+  const customerName = session.metadata.name;
 
   const orderId = inTransaction(() => {
     const result = db
@@ -115,7 +147,7 @@ function saveOrderFromSession(session) {
         "INSERT INTO orders (customer_name, customer_email, total, created_at, stripe_session_id) VALUES (?, ?, ?, ?, ?)"
       )
       .run(
-        session.metadata.name,
+        customerName,
         session.customer_email || (session.customer_details && session.customer_details.email) || "unknown",
         total,
         new Date().toISOString(),
@@ -125,9 +157,7 @@ function saveOrderFromSession(session) {
     const insertItem = db.prepare(
       "INSERT INTO order_items (order_id, product_name, price) VALUES (?, ?, ?)"
     );
-    const lowerStock = db.prepare(
-      "UPDATE products SET stock = MAX(stock - 1, 0) WHERE id = ?"
-    );
+    const lowerStock = db.prepare("UPDATE products SET stock = MAX(stock - 1, 0) WHERE id = ?");
     for (const p of items) {
       insertItem.run(newId, p.name, p.price);
       lowerStock.run(p.id);
@@ -135,7 +165,11 @@ function saveOrderFromSession(session) {
     return newId;
   });
 
-  return { orderId: orderId, total: total };
+  // Tell the owner about the order, and tell customers that stock changed
+  broadcast(adminClients, "order", { orderId: orderId, name: customerName, total: total });
+  broadcast(publicClients, "products", {});
+
+  return { orderId: orderId, total: total, created: true };
 }
 
 // Stripe calls this by itself when a payment succeeds.
@@ -179,6 +213,11 @@ const checkoutLimiter = rateLimit({
   max: 30,
   message: { error: "Too many requests. Please try again later." }
 });
+const trackLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: "Too many tries. Please wait a few minutes." }
+});
 
 function requireAdmin(req, res, next) {
   const expected = process.env.ADMIN_PASSWORD;
@@ -199,6 +238,10 @@ app.use(["/admin.html", "/orders.html"], adminLimiter, requireAdmin);
 app.use(express.json({ limit: "10kb" }));
 app.use(express.static("public"));
 
+// Live streams
+app.get("/events", openStream(publicClients));
+app.get("/admin-events", adminLimiter, requireAdmin, openStream(adminClients));
+
 app.get("/products", (req, res) => {
   res.json(db.prepare("SELECT * FROM products ORDER BY id").all());
 });
@@ -210,6 +253,7 @@ app.post("/products", adminLimiter, requireAdmin, (req, res) => {
   const result = db
     .prepare("INSERT INTO products (name, price, description, image_url, stock) VALUES (?, ?, ?, ?, ?)")
     .run(p.name, p.price, p.description, p.imageUrl, p.stock);
+  broadcast(publicClients, "products", {});
   res.json({ id: Number(result.lastInsertRowid) });
 });
 
@@ -222,12 +266,14 @@ app.put("/products/:id", adminLimiter, requireAdmin, (req, res) => {
     .prepare("UPDATE products SET name = ?, price = ?, description = ?, image_url = ?, stock = ? WHERE id = ?")
     .run(p.name, p.price, p.description, p.imageUrl, p.stock, id);
   if (result.changes === 0) return res.status(404).json({ error: "Product not found." });
+  broadcast(publicClients, "products", {});
   res.json({ ok: true });
 });
 
 app.delete("/products/:id", adminLimiter, requireAdmin, (req, res) => {
   const result = db.prepare("DELETE FROM products WHERE id = ?").run(Number(req.params.id));
   if (result.changes === 0) return res.status(404).json({ error: "Product not found." });
+  broadcast(publicClients, "products", {});
   res.json({ ok: true });
 });
 
@@ -301,17 +347,53 @@ app.get("/confirm", checkoutLimiter, async (req, res) => {
     if (session.payment_status !== "paid") {
       return res.status(400).json({ error: "Payment was not completed." });
     }
-    res.json(saveOrderFromSession(session));
+    const saved = saveOrderFromSession(session);
+    res.json({ orderId: saved.orderId, total: saved.total });
   } catch (err) {
     console.error("Confirm error:", err.message);
     res.status(400).json({ error: "Could not confirm the payment." });
   }
 });
 
+// Customers check their own order with the order number AND their email
+app.get("/track", trackLimiter, (req, res) => {
+  const id = Number(req.query.order);
+  const email = String(req.query.email || "").trim().toLowerCase();
+  const order = Number.isInteger(id)
+    ? db.prepare("SELECT * FROM orders WHERE id = ?").get(id)
+    : null;
+
+  if (!order || String(order.customer_email).toLowerCase() !== email) {
+    return res.status(404).json({ error: "We could not find that order. Check the number and email." });
+  }
+  const items = db
+    .prepare("SELECT product_name, price FROM order_items WHERE order_id = ?")
+    .all(order.id);
+  res.json({
+    id: order.id,
+    status: order.status,
+    total: order.total,
+    created_at: order.created_at,
+    items: items
+  });
+});
+
+// Owner: list orders
 app.get("/orders", adminLimiter, requireAdmin, (req, res) => {
   const orders = db.prepare("SELECT * FROM orders ORDER BY id DESC").all();
   const getItems = db.prepare("SELECT product_name, price FROM order_items WHERE order_id = ?");
   res.json(orders.map((o) => ({ ...o, items: getItems.all(o.id) })));
+});
+
+// Owner: change an order's status
+app.put("/orders/:id/status", adminLimiter, requireAdmin, (req, res) => {
+  const status = req.body && req.body.status;
+  if (!STATUSES.includes(status)) return res.status(400).json({ error: "Unknown status." });
+  const id = Number(req.params.id);
+  const result = db.prepare("UPDATE orders SET status = ? WHERE id = ?").run(status, id);
+  if (result.changes === 0) return res.status(404).json({ error: "Order not found." });
+  broadcast(publicClients, "order-status", { orderId: id });
+  res.json({ ok: true });
 });
 
 const PORT = process.env.PORT || 3000;
